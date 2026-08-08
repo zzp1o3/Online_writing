@@ -762,3 +762,9 @@ export {
   GuardianAgent, computeScreenTime,
   type GuardianIssue, type GuardianReport, type GuardianInput, type GuardianRunResult, type ScreenTimeSample,
 } from "./agents/guardian.js";
+
+// ── 分支管理 Agent（设计文档 §7）──
+export {
+  BranchManagerAgent, applyBranchProposal,
+  type BranchProposal, type BranchCutAssessment, type BranchManagerInput, type BranchManagerRunResult,
+} from "./agents/branch-manager.js";

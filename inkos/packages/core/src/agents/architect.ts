@@ -2,7 +2,7 @@ import { BaseAgent } from "./base.js";
 import type { BookConfig, FanficMode } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { readGenreProfile } from "./rules-reader.js";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHookSnapshot } from "../utils/memory-retrieval.js";
 import {
@@ -845,156 +845,21 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     _numericalSystem: boolean = true,
     language: "zh" | "en" = "zh",
     mode: "init" | "revise" = "init",
+    lockedFiles: ReadonlyArray<string> = [],
   ): Promise<void> {
-    const storyDir = join(bookDir, "story");
-    const outlineDir = join(storyDir, "outline");
-    const rolesDir = join(storyDir, "roles");
-    const rolesMajorDir = join(rolesDir, "主要角色");
-    const rolesMinorDir = join(rolesDir, "次要角色");
-
-    await Promise.all([
-      mkdir(storyDir, { recursive: true }),
-      mkdir(outlineDir, { recursive: true }),
-      mkdir(rolesMajorDir, { recursive: true }),
-      mkdir(rolesMinorDir, { recursive: true }),
-    ]);
-
-    const writes: Array<Promise<void>> = [];
-
-    const storyFrameBody = output.storyFrame ?? output.storyBible;
-    const volumeMap = output.volumeMap ?? output.volumeOutline;
-    const rhythmPrinciples = output.rhythmPrinciples ?? "";
-    const roles = output.roles ?? [];
-    const isPhase5Output = Boolean(output.storyFrame?.trim());
-
-    if (mode === "revise" && !isPhase5Output) {
-      throw new Error(
-        "Architect revise mode produced legacy-format output (storyFrame empty). " +
-        "The book's architecture files have NOT been modified.",
-      );
-    }
-
-    if (mode === "revise") {
-      await rm(rolesMajorDir, { recursive: true, force: true });
-      await rm(rolesMinorDir, { recursive: true, force: true });
-      await mkdir(rolesMajorDir, { recursive: true });
-      await mkdir(rolesMinorDir, { recursive: true });
-    }
-
-    if (!isPhase5Output) {
-      writes.push(writeFile(join(storyDir, "story_bible.md"), output.storyBible, "utf-8"));
-      writes.push(writeFile(join(storyDir, "volume_outline.md"), output.volumeOutline, "utf-8"));
-      writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules, "utf-8"));
-      writes.push(writeFile(
-        join(storyDir, "character_matrix.md"),
-        language === "en"
-          ? "# Character Matrix\n\n<!-- One ## section per character. Add new characters as new ## blocks. -->\n"
-          : "# 角色矩阵\n\n<!-- 每个角色一个 ## 块，新角色追加新 ## 即可。 -->\n",
-        "utf-8",
-      ));
-
-      if (mode === "init") {
-        const currentStateSeed = output.currentState?.trim()
-          ? output.currentState
-          : (language === "en"
-              ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter.\n"
-              : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。\n");
-        writes.push(writeFile(join(storyDir, "current_state.md"), currentStateSeed, "utf-8"));
-        writes.push(writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"));
-        writes.push(writeFile(
-          join(storyDir, "emotional_arcs.md"),
-          language === "en"
-            ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
-            : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
-          "utf-8",
-        ));
-      }
-
-      await Promise.all(writes);
-      return;
-    }
-
-    const storyFrame = storyFrameBody.trim();
-
-    // Phase 5 primary prose files
-    writes.push(writeFile(join(outlineDir, "story_frame.md"), storyFrame, "utf-8"));
-    writes.push(writeFile(join(outlineDir, "volume_map.md"), volumeMap, "utf-8"));
-    // Phase 5 consolidation: rhythm principles live inside the last paragraph
-    // of volume_map. A separate 节奏原则.md / rhythm_principles.md file is only
-    // written when the architect happened to produce a standalone block (legacy
-    // 7-section output / foundation-reviewer round-trips that still split it
-    // out). Skipping the empty write avoids 0-byte files that mislead the UI
-    // and fight against the "no duplication" rule — readers who need the rhythm
-    // content already pull it from volume_map's closing paragraph.
-    if (rhythmPrinciples.trim()) {
-      const rhythmFileName = language === "en" ? "rhythm_principles.md" : "节奏原则.md";
-      writes.push(writeFile(join(outlineDir, rhythmFileName), rhythmPrinciples, "utf-8"));
-    }
-
-    // Roles — one file per character
-    for (const role of roles) {
-      const targetDir = role.tier === "major" ? rolesMajorDir : rolesMinorDir;
-      const safeName = role.name.replace(/[/\\:*?"<>|]/g, "_").trim();
-      if (!safeName) continue;
-      writes.push(writeFile(join(targetDir, `${safeName}.md`), role.content, "utf-8"));
-    }
-
-    // Compat shims — these are pointer files, not authoritative content.
-    writes.push(writeFile(
-      join(storyDir, "story_bible.md"),
-      this.buildStoryBibleShim(storyFrame, language),
-      "utf-8",
-    ));
-    writes.push(writeFile(
-      join(storyDir, "character_matrix.md"),
-      this.buildCharacterMatrixShim(roles, language),
-      "utf-8",
-    ));
-
-    // Cleanup #1: volume_outline.md mirror removed. All readers now resolve
-    // through readVolumeMap() in utils/outline-paths.ts, which prefers
-    // outline/volume_map.md and falls back to legacy volume_outline.md for
-    // books initialized before Phase 5.
-
-    writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules.trim() + "\n", "utf-8"));
-
-    // Runtime state files.
-    // Phase 5 consolidation: the architect no longer emits a current_state
-    // section (only 3 genres — 港综同人/年代文/都市重生 — benefit from a
-    // separate era anchor, and those fold naturally into story_frame.世界观底色).
-    // We still write current_state.md with a seed placeholder so
-    // isCompleteBookDirectory() sees it on first boot and the runtime
-    // consolidator has a file to append each chapter's state into.
-    // Per-character state lives in roles/*.Current_State; initial hook rows
-    // live in pending_hooks with start_chapter=0. Legacy books / imports that
-    // still produced the section keep their content as-is.
-    if (mode === "init") {
-      const currentStateSeed = output.currentState?.trim()
-        ? output.currentState
-        : (language === "en"
-            ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter. Initial per-character state lives in roles/*.Current_State; load-bearing initial world facts live in pending_hooks rows with start_chapter=0.\n"
-            : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。每个角色的初始状态详见 roles/*.当前现状；承重的初始世界设定见 pending_hooks 里 startChapter=0 的行。\n");
-      writes.push(writeFile(join(storyDir, "current_state.md"), currentStateSeed, "utf-8"));
-      writes.push(writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"));
-      writes.push(writeFile(
-        join(storyDir, "emotional_arcs.md"),
-        language === "en"
-          ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
-          : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
-        "utf-8",
-      ));
-    }
-
-    // Cleanup #2 (Option B): particle_ledger.md / subplot_board.md /
-    // chapter_summaries.md are pure runtime logs appended by the writer's
-    // settlement phase. The architect no longer seeds them here — mixing a
-    // static "setting" seed with a runtime "append log" was the dual-purpose
-    // mess that prompted the cleanup. If they don't exist yet, downstream
-    // readers see the placeholder and the first chapter settlement creates
-    // them naturally. The `_numericalSystem` parameter is kept for API
-    // compatibility with existing callers.
-
-    await Promise.all(writes);
+    await writeFoundationFilesLocked(
+      {
+        buildStoryBibleShim: (storyFrame, lang) => this.buildStoryBibleShim(storyFrame, lang),
+        buildCharacterMatrixShim: (roles, lang) => this.buildCharacterMatrixShim(roles, lang),
+        log: this.log,
+      },
+      bookDir,
+      output,
+      _numericalSystem,
+      language,
+      mode,
+      lockedFiles,
+    );
   }
 
   /**
@@ -1431,3 +1296,214 @@ ${trimmed}\n`;
       : `${trimmedNotes} (${trimmedSeed})`;
   }
 }
+
+/**
+ * 删除角色目录下未锁定的 .md 文件；锁定基线的角色文件保留。
+ * lockedFiles 是 story 相对路径（如 "roles/主要角色/张三.md"）。
+ */
+async function rmRoleFilesExceptLocked(dir: string, locked: ReadonlySet<string>): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return; // 目录不存在视为空
+  }
+  const tier = dir.includes("主要角色") || dir.includes("major") ? "主要角色" : "次要角色";
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.endsWith(".md")) return;
+    const storyRel = `roles/${tier}/${entry}`;
+    if (locked.has(storyRel)) return;
+    await rm(join(dir, entry), { force: true });
+  }));
+}
+
+/**
+ * writeFoundationFiles 的锁定感知实现（注入设定基线锁定跳过逻辑）。
+ * ctx 提供 shim 构建与日志（模块级函数无法访问类实例 this）。
+ */
+interface ArchitectWriteCtx {
+  readonly buildStoryBibleShim: (storyFrame: string, language: "zh" | "en") => string;
+  readonly buildCharacterMatrixShim: (roles: ReadonlyArray<ArchitectRole>, language: "zh" | "en") => string;
+  readonly log?: { warn?: (message: string) => void };
+}
+
+async function writeFoundationFilesLocked(
+  ctx: ArchitectWriteCtx,
+  bookDir: string,
+  output: ArchitectOutput,
+  _numericalSystem: boolean,
+  language: "zh" | "en",
+  mode: "init" | "revise",
+  lockedFiles: ReadonlyArray<string>,
+): Promise<void> {
+    const storyDir = join(bookDir, "story");
+    const outlineDir = join(storyDir, "outline");
+    const rolesDir = join(storyDir, "roles");
+    const rolesMajorDir = join(rolesDir, "主要角色");
+    const rolesMinorDir = join(rolesDir, "次要角色");
+
+    await Promise.all([
+      mkdir(storyDir, { recursive: true }),
+      mkdir(outlineDir, { recursive: true }),
+      mkdir(rolesMajorDir, { recursive: true }),
+      mkdir(rolesMinorDir, { recursive: true }),
+    ]);
+
+    // 设定基线锁定（设计文档 §11）：lockedFiles 是 story 相对路径
+    // （如 "outline/story_frame.md"、"roles/主要角色/张三.md"），
+    // 命中则跳过写入，保留用户在设定工作台锁定的内容。
+    const locked = new Set(lockedFiles);
+    const skippedWrites: string[] = [];
+    const writes: Array<Promise<void>> = [];
+
+    const addWrite = (storyRel: string, fullPath: string, content: string): void => {
+      if (locked.has(storyRel)) {
+        skippedWrites.push(storyRel);
+        return;
+      }
+      writes.push(writeFile(fullPath, content, "utf-8"));
+    };
+
+    const storyFrameBody = output.storyFrame ?? output.storyBible;
+    const volumeMap = output.volumeMap ?? output.volumeOutline;
+    const rhythmPrinciples = output.rhythmPrinciples ?? "";
+    const roles = output.roles ?? [];
+    const isPhase5Output = Boolean(output.storyFrame?.trim());
+
+    if (mode === "revise" && !isPhase5Output) {
+      throw new Error(
+        "Architect revise mode produced legacy-format output (storyFrame empty). " +
+        "The book's architecture files have NOT been modified.",
+      );
+    }
+
+    if (mode === "revise") {
+      // 只删除未锁定的角色文件，锁定基线的角色保留（避免重生成清掉用户锁定的设定）。
+      await rmRoleFilesExceptLocked(rolesMajorDir, locked);
+      await rmRoleFilesExceptLocked(rolesMinorDir, locked);
+      await mkdir(rolesMajorDir, { recursive: true });
+      await mkdir(rolesMinorDir, { recursive: true });
+    }
+
+    if (!isPhase5Output) {
+      addWrite("story_bible.md", join(storyDir, "story_bible.md"), output.storyBible);
+      addWrite("volume_outline.md", join(storyDir, "volume_outline.md"), output.volumeOutline);
+      addWrite("book_rules.md", join(storyDir, "book_rules.md"), output.bookRules);
+      addWrite(
+        "character_matrix.md",
+        join(storyDir, "character_matrix.md"),
+        language === "en"
+          ? "# Character Matrix\n\n<!-- One ## section per character. Add new characters as new ## blocks. -->\n"
+          : "# 角色矩阵\n\n<!-- 每个角色一个 ## 块，新角色追加新 ## 即可。 -->\n",
+      );
+
+      if (mode === "init") {
+        const currentStateSeed = output.currentState?.trim()
+          ? output.currentState
+          : (language === "en"
+              ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter.\n"
+              : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。\n");
+        addWrite("current_state.md", join(storyDir, "current_state.md"), currentStateSeed);
+        addWrite("pending_hooks.md", join(storyDir, "pending_hooks.md"), output.pendingHooks);
+        addWrite(
+          "emotional_arcs.md",
+          join(storyDir, "emotional_arcs.md"),
+          language === "en"
+            ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
+            : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
+        );
+      }
+
+      await Promise.all(writes);
+      if (skippedWrites.length > 0) {
+        ctx.log?.warn?.(`[architect] 设定基线锁定，跳过写入: ${skippedWrites.join(", ")}`);
+      }
+      return;
+    }
+
+    const storyFrame = storyFrameBody.trim();
+
+    // Phase 5 primary prose files
+    addWrite("outline/story_frame.md", join(outlineDir, "story_frame.md"), storyFrame);
+    addWrite("outline/volume_map.md", join(outlineDir, "volume_map.md"), volumeMap);
+    // Phase 5 consolidation: rhythm principles live inside the last paragraph
+    // of volume_map. A separate 节奏原则.md / rhythm_principles.md file is only
+    // written when the architect happened to produce a standalone block (legacy
+    // 7-section output / foundation-reviewer round-trips that still split it
+    // out). Skipping the empty write avoids 0-byte files that mislead the UI
+    // and fight against the "no duplication" rule — readers who need the rhythm
+    // content already pull it from volume_map's closing paragraph.
+    if (rhythmPrinciples.trim()) {
+      const rhythmFileName = language === "en" ? "rhythm_principles.md" : "节奏原则.md";
+      addWrite(`outline/${rhythmFileName}`, join(outlineDir, rhythmFileName), rhythmPrinciples);
+    }
+
+    // Roles — one file per character
+    for (const role of roles) {
+      const targetDir = role.tier === "major" ? rolesMajorDir : rolesMinorDir;
+      const tierRel = role.tier === "major" ? "主要角色" : "次要角色";
+      const safeName = role.name.replace(/[/\\:*?"<>|]/g, "_").trim();
+      if (!safeName) continue;
+      addWrite(`roles/${tierRel}/${safeName}.md`, join(targetDir, `${safeName}.md`), role.content);
+    }
+
+    // Compat shims — these are pointer files, not authoritative content.
+    addWrite(
+      "story_bible.md",
+      join(storyDir, "story_bible.md"),
+      ctx.buildStoryBibleShim(storyFrame, language),
+    );
+    addWrite(
+      "character_matrix.md",
+      join(storyDir, "character_matrix.md"),
+      ctx.buildCharacterMatrixShim(roles, language),
+    );
+
+    // Cleanup #1: volume_outline.md mirror removed. All readers now resolve
+    // through readVolumeMap() in utils/outline-paths.ts, which prefers
+    // outline/volume_map.md and falls back to legacy volume_outline.md for
+    // books initialized before Phase 5.
+
+    addWrite("book_rules.md", join(storyDir, "book_rules.md"), output.bookRules.trim() + "\n");
+
+    // Runtime state files.
+    // Phase 5 consolidation: the architect no longer emits a current_state
+    // section (only 3 genres — 港综同人/年代文/都市重生 — benefit from a
+    // separate era anchor, and those fold naturally into story_frame.世界观底色).
+    // We still write current_state.md with a seed placeholder so
+    // isCompleteBookDirectory() sees it on first boot and the runtime
+    // consolidator has a file to append each chapter's state into.
+    // Per-character state lives in roles/*.Current_State; initial hook rows
+    // live in pending_hooks with start_chapter=0. Legacy books / imports that
+    // still produced the section keep their content as-is.
+    if (mode === "init") {
+      const currentStateSeed = output.currentState?.trim()
+        ? output.currentState
+        : (language === "en"
+            ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter. Initial per-character state lives in roles/*.Current_State; load-bearing initial world facts live in pending_hooks rows with start_chapter=0.\n"
+            : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。每个角色的初始状态详见 roles/*.当前现状；承重的初始世界设定见 pending_hooks 里 startChapter=0 的行。\n");
+      addWrite("current_state.md", join(storyDir, "current_state.md"), currentStateSeed);
+      addWrite("pending_hooks.md", join(storyDir, "pending_hooks.md"), output.pendingHooks);
+      addWrite(
+        "emotional_arcs.md",
+        join(storyDir, "emotional_arcs.md"),
+        language === "en"
+          ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
+          : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
+      );
+    }
+
+    // Cleanup #2 (Option B): particle_ledger.md / subplot_board.md /
+    // chapter_summaries.md are pure runtime logs appended by the writer's
+    // settlement phase. The architect no longer seeds them here — mixing a
+    // static "setting" seed with a runtime "append log" was the dual-purpose
+    // mess that prompted the cleanup. If they don't exist yet, downstream
+    // readers see the placeholder and the first chapter settlement creates
+    // them naturally. The `_numericalSystem` parameter is kept for API
+    // compatibility with existing callers.
+
+    await Promise.all(writes);
+    if (skippedWrites.length > 0) {
+      ctx.log?.warn?.(`[architect] 设定基线锁定，跳过写入: ${skippedWrites.join(", ")}`);
+    }
+  }

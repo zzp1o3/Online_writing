@@ -22,7 +22,7 @@ import { useColors } from "../hooks/use-colors";
 import { tr } from "../lib/app-language";
 import type { Theme } from "../hooks/use-theme";
 import type { TFunction } from "../hooks/use-i18n";
-import { Loader2, Scissors } from "lucide-react";
+import { Loader2, Scissors, GitBranch } from "lucide-react";
 
 /**
  * 分支图谱视图（设计文档 §7 / §11）
@@ -183,6 +183,7 @@ export default function BranchGraphView({
   const [cutting, setCutting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [cutResult, setCutResult] = useState<string | null>(null);
+  const [proposing, setProposing] = useState(false);
 
   useEffect(() => {
     if (!graph) return;
@@ -241,6 +242,28 @@ export default function BranchGraphView({
     return { total: graph.nodes.length, active, branches, gray };
   }, [graph]);
 
+  const runPropose = async () => {
+    setProposing(true);
+    setActionError(null);
+    setCutResult(null);
+    try {
+      const result = await fetchJson<{ proposal: { node: { title: string }; rationale: string } | null } | null>(`/books/${bookId}/branch-graph/propose`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!result?.proposal) {
+        setCutResult(tr("AI 认为当前不值得开新分支", "AI sees no new branch worth opening now"));
+      } else {
+        setCutResult(tr(`已提议新分支「${result.proposal.node.title}」：${result.proposal.rationale}`, `Proposed branch "${result.proposal.node.title}": ${result.proposal.rationale}`));
+      }
+      await refetch();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProposing(false);
+    }
+  };
+
   const confirmCut = async () => {
     if (!cutTarget) return;
     setCutting(true);
@@ -287,9 +310,20 @@ export default function BranchGraphView({
             {tr(`节点 ${stats.total} · 活跃 ${stats.active} · 分支 ${stats.branches} · 汇入点 ${stats.gray}`, `Nodes ${stats.total} · Active ${stats.active} · Branches ${stats.branches} · Merge ${stats.gray}`)}
           </span>
         )}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {tr("点击分支节点可砍分支", "Click a branch node to cut it")}
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => void runPropose()}
+            disabled={proposing}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs ${c.btnSecondary} disabled:opacity-50`}
+            data-testid="branch-propose"
+          >
+            {proposing ? <Loader2 size={13} className="animate-spin" /> : <GitBranch size={13} />}
+            {tr("AI 提议新分支", "Propose branch (AI)")}
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {tr("点击分支节点可砍分支", "Click a branch node to cut it")}
+          </span>
+        </div>
       </div>
 
       {cutResult && (

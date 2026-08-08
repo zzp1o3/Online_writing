@@ -52,9 +52,14 @@ import {
 } from "./chapter-state-recovery.js";
 import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { GuardianAgent, type GuardianRunResult } from "../agents/guardian.js";
+import {
+  BranchManagerAgent, applyBranchProposal,
+  type BranchProposal, type BranchCutAssessment, type BranchManagerRunResult,
+} from "../agents/branch-manager.js";
 import type { BranchGraph } from "../models/branch-graph.js";
 import { cutBranch, loadBranchGraph, saveBranchGraph } from "../state/branch-store.js";
 import { loadCards, upsertCard } from "../state/card-store.js";
+import { loadSettingBaseline } from "../state/setting-baseline.js";
 import type { StoryCard } from "../models/cards.js";
 import {
   transitionChapterApproval, attachPartialRestart, setJudgeSummary,
@@ -914,12 +919,15 @@ export class PipelineRunner {
     await mkdir(join(storyDir, "roles", "次要角色"), { recursive: true });
 
     const { profile: gp } = await this.loadGenreProfile(book.genre);
+    // 设定基线锁定（设计文档 §11）：用户锁定的设定文件在重生成时跳过覆盖。
+    const baseline = await loadSettingBaseline(bookDir);
     await architect.writeFoundationFiles(
       bookDir,
       foundation,
       gp.numericalSystem,
       book.language ?? gp.language,
       "revise",
+      baseline.lockedFiles,
     );
   }
 
@@ -1819,6 +1827,50 @@ export class PipelineRunner {
             critical: project.branch.sideCharacterCriticalRatio,
           }
         : undefined,
+      language: book.language,
+    });
+  }
+
+  /** 分支管理（设计文档 §7）：AI 提议新分支（T5 检索），返回提议与更新后的图谱 */
+  async proposeBranchForBook(
+    bookId: string,
+  ): Promise<{ readonly proposal: BranchProposal | null; readonly graph: BranchGraph; readonly tokenUsage?: BranchManagerRunResult["tokenUsage"] }> {
+    const book = await this.state.loadBookConfig(bookId);
+    const bookDir = this.state.bookDir(bookId);
+    const graph = await loadBranchGraph(bookDir);
+    const project = await this.readProjectConfig();
+    const nextChapter = await this.state.getNextChapterNumber(bookId);
+    const branchManager = new BranchManagerAgent(this.agentCtxFor("branch-manager", bookId));
+    const result = await branchManager.proposeBranch({
+      book: { title: book.title, genre: book.genre, language: book.language },
+      bookDir,
+      graph,
+      currentChapter: nextChapter,
+      maxBranches: project?.branch?.maxBranches,
+      language: book.language,
+    });
+    if (!result.proposal) {
+      return { proposal: null, graph, tokenUsage: result.tokenUsage };
+    }
+    const next = applyBranchProposal(graph, result.proposal);
+    await saveBranchGraph(bookDir, next);
+    return { proposal: result.proposal, graph: next, tokenUsage: result.tokenUsage };
+  }
+
+  /** 分支管理（设计文档 §7）：砍分支影响评估（含 AI 重写建议），供前端砍分支前预览 */
+  async assessCutForBook(
+    bookId: string,
+    nodeId: string,
+    reason: string,
+  ): Promise<BranchCutAssessment> {
+    const book = await this.state.loadBookConfig(bookId);
+    const graph = await loadBranchGraph(this.state.bookDir(bookId));
+    const branchManager = new BranchManagerAgent(this.agentCtxFor("branch-manager", bookId));
+    return branchManager.assessCut({
+      book: { title: book.title, genre: book.genre },
+      graph,
+      nodeId,
+      reason,
       language: book.language,
     });
   }

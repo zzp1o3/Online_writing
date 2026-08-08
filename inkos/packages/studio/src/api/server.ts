@@ -3769,6 +3769,33 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     }
   });
 
+  // 分支管理 Agent（设计文档 §7）：AI 提议新分支 + 砍分支影响评估
+  app.post("/api/v1/books/:id/branch-graph/propose", async (c) => {
+    const id = c.req.param("id");
+    try {
+      const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
+      const result = await pipeline.proposeBranchForBook(id);
+      return c.json(result);
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post("/api/v1/books/:id/branch-graph/assess-cut", async (c) => {
+    const id = c.req.param("id");
+    const body = await c.req.json<{ nodeId?: string; reason?: string }>();
+    if (!body.nodeId) {
+      return c.json({ error: "nodeId 必填" }, 400);
+    }
+    try {
+      const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
+      const result = await pipeline.assessCutForBook(id, body.nodeId, body.reason ?? "用户砍分支");
+      return c.json({ ok: true, ...result });
+    } catch (e) {
+      return c.json({ error: String(e) }, 500);
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // 章节审批与局部重启（设计文档 §9）
   // ---------------------------------------------------------------------------

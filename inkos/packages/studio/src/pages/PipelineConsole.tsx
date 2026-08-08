@@ -79,6 +79,8 @@ export default function PipelineConsole({
   const [runError, setRunError] = useState<string | null>(null);
   const [guardianResult, setGuardianResult] = useState<GuardianReport | null>(null);
   const [logLines, setLogLines] = useState<ReadonlyArray<{ at: string; kind: string; text: string }>>([]);
+  const [exporting, setExporting] = useState<"txt" | "md" | "epub" | null>(null);
+  const [approvedOnly, setApprovedOnly] = useState(false);
 
   // 订阅写章节相关 SSE
   useEffect(() => {
@@ -137,6 +139,32 @@ export default function PipelineConsole({
     } catch (e) {
       setRunning(null);
       setRunError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const exportBook = async (fmt: "txt" | "md" | "epub") => {
+    setRunError(null);
+    setExporting(fmt);
+    try {
+      // 先保存到项目目录，再触发浏览器下载（文件较大的 EPUB 也走流式）
+      await postApi(`/books/${bookId}/export-save`, { format: fmt, approvedOnly });
+      const res = await fetch(`/api/v1/books/${bookId}/export?format=${fmt}${approvedOnly ? "&approvedOnly=true" : ""}`);
+      if (!res.ok) {
+        const json = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(json?.error ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${bookId}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setLogLines((prev) => [...prev, { at: new Date().toISOString(), kind: "success", text: `已导出 ${fmt.toUpperCase()}` }]);
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -311,6 +339,30 @@ export default function PipelineConsole({
               {running === "guardian" ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
               {tr("运行守护检查", "Run guardian check")}
             </button>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card p-4 space-y-2">
+            <div className="text-xs text-muted-foreground">{tr("导出（阶段 4）", "Export (Stage 4)")}</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(["txt", "md", "epub"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => void exportBook(fmt)}
+                  disabled={exporting === fmt || running !== null}
+                  className={`px-2 py-1.5 rounded-md text-xs ${c.btnSecondary} disabled:opacity-50`}
+                >
+                  {exporting === fmt ? <Loader2 size={12} className="animate-spin mx-auto" /> : fmt.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={approvedOnly}
+                onChange={(e) => setApprovedOnly(e.target.checked)}
+              />
+              {tr("仅已通过章节", "Approved chapters only")}
+            </label>
           </div>
 
           <div className="rounded-xl border border-border bg-card p-4 space-y-1.5">

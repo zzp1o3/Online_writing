@@ -456,6 +456,84 @@ describe("pipeline.reviseFoundation", () => {
     }
   });
 
+  it("revise 时锁定基线的角色/大纲文件不删除也不覆盖（设定工作台锁定）", async () => {
+    const { mkdtemp, writeFile, mkdir, rm, readFile, access } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { PipelineRunner } = await import("../pipeline/runner.js");
+    const { StateManager } = await import("../state/manager.js");
+
+    const root = await mkdtemp(join(tmpdir(), "inkos-revise-locked-"));
+    const bookDir = join(root, "books", "locked-book");
+
+    try {
+      // Phase 5 书 + 设定基线锁定 story_frame 与主角角色
+      await mkdir(join(bookDir, "story", "outline"), { recursive: true });
+      await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
+      await mkdir(join(bookDir, "story", "roles", "次要角色"), { recursive: true });
+      await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "用户锁定的世界观", "utf-8");
+      await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "原 volume_map", "utf-8");
+      await writeFile(join(bookDir, "story", "roles", "主要角色", "主角.md"), "用户锁定的主角卡", "utf-8");
+      await writeFile(join(bookDir, "story", "roles", "次要角色", "未锁定的配角.md"), "会被删除的旧配角", "utf-8");
+      await writeFile(join(bookDir, "story", "book_rules.md"), "", "utf-8");
+      await writeFile(join(bookDir, "story", "character_matrix.md"), "", "utf-8");
+      await writeFile(join(bookDir, "story", "story_bible.md"), "", "utf-8");
+      await writeFile(join(bookDir, "story", "volume_outline.md"), "", "utf-8");
+      // 设定基线：锁定 story_frame 与 主角.md
+      await writeFile(join(bookDir, "story", "settings_baseline.json"), JSON.stringify({
+        schemaVersion: 1,
+        lockedFiles: ["outline/story_frame.md", "roles/主要角色/主角.md"],
+        updatedAt: "2026-04-10T00:00:00.000Z",
+      }), "utf-8");
+      await writeFile(join(bookDir, "book.json"), JSON.stringify({
+        id: "locked-book", title: "t", platform: "qidian", genre: "xuanhuan",
+        status: "active", targetChapters: 50, chapterWordCount: 3000, language: "zh",
+        createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-10T00:00:00.000Z",
+      }), "utf-8");
+
+      // architect 重生成：新的 story_frame + 新的主角卡 + 新配角
+      vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockResolvedValue({
+        storyBible: "(shim)", volumeOutline: "(shim)",
+        bookRules: "---\nversion: \"1.0\"\n---\n",
+        currentState: "", pendingHooks: "| hook_id |",
+        storyFrame: "AI 重生成的新世界观",
+        volumeMap: "## 新卷",
+        roles: [
+          { tier: "major", name: "主角", content: "AI 重生成的主角卡" },
+          { tier: "minor", name: "新配角", content: "新配角内容" },
+        ],
+      });
+      vi.spyOn(FoundationReviewerAgent.prototype, "review").mockResolvedValue({
+        passed: true, totalScore: 90, dimensions: [], overallFeedback: "ok",
+      } as unknown as Awaited<ReturnType<FoundationReviewerAgent["review"]>>);
+
+      const state = new StateManager(root);
+      const runner = new PipelineRunner({
+        state, projectRoot: root, client: TEST_CLIENT, model: "test-model",
+      } as unknown as ConstructorParameters<typeof PipelineRunner>[0]);
+
+      await runner.reviseFoundation("locked-book", "调整配角");
+
+      // 锁定文件：内容保持不变
+      const storyFrame = await readFile(join(bookDir, "story", "outline", "story_frame.md"), "utf-8");
+      expect(storyFrame).toBe("用户锁定的世界观");
+      expect(storyFrame).not.toContain("AI 重生成");
+
+      const lockedRole = await readFile(join(bookDir, "story", "roles", "主要角色", "主角.md"), "utf-8");
+      expect(lockedRole).toBe("用户锁定的主角卡");
+      expect(lockedRole).not.toContain("AI 重生成");
+
+      // 未锁定文件：正常更新/清理
+      const volumeMap = await readFile(join(bookDir, "story", "outline", "volume_map.md"), "utf-8");
+      expect(volumeMap).toContain("新卷");
+
+      await expect(access(join(bookDir, "story", "roles", "次要角色", "未锁定的配角.md"))).rejects.toThrow();
+      await expect(access(join(bookDir, "story", "roles", "次要角色", "新配角.md"))).resolves.not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("Phase 5 revise 备份目录带 phase5 tag 并包含 outline/ + roles/", async () => {
     const { mkdtemp, writeFile, mkdir, rm, readdir, access } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
