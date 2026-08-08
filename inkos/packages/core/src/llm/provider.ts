@@ -149,7 +149,7 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   const _earlyCard = lookupModel(config.service ?? "custom", config.model);
   const defaults = {
     temperature: config.temperature ?? 0.7,
-    maxTokens: _earlyCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
+    maxTokens: resolveModelMaxTokens(config.service ?? "custom", _earlyCard),
     thinkingBudget: config.thinkingBudget ?? 0,
     extra: config.extra ?? {},
   };
@@ -196,7 +196,7 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     input: ["text"] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: modelCard?.contextWindowTokens ?? 128_000,
-    maxTokens: modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
+    maxTokens: resolveModelMaxTokens(serviceName, modelCard),
     ...(extraHeaders ? { headers: extraHeaders } : {}),
     ...(compat ? { compat } : {}),
   };
@@ -212,6 +212,26 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     _apiKey: config.apiKey,
     defaults,
   };
+}
+
+/**
+ * 模型 max_tokens 推导。
+ *
+ * custom 是用户自定义端点：bank 里借来的同名模型卡（Layer 2 全局扫）用于
+ * 能力判断（contextWindow 等），但 maxOutput 需要夹制——自定义端点的
+ * max_tokens 实际上限与官方卡可能不同（M2 验证：custom 配 deepseek-v4-flash
+ * 时借到 DeepSeek 官方卡 maxOutput=393216，日日新端点上限 384000，请求被 400
+ * 拒绝）。取 min(借卡值, 写作兜底预算) 既保留已知小模型的合理输出上限
+ * （如 gpt-4o → 4096），又防止借到超大 maxOutput 导致请求参数超端点约束。
+ */
+function resolveModelMaxTokens(
+  service: string,
+  modelCard: { readonly maxOutput?: number } | undefined,
+): number {
+  if (service === "custom") {
+    return Math.min(modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS, UNKNOWN_MODEL_FALLBACK_MAX_TOKENS);
+  }
+  return modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS;
 }
 
 function resolvePiApi(
