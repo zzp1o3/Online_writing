@@ -1,0 +1,13 @@
+# IDE / 个人环境
+.idea/
+.vscode/
+*.swp
+
+# Claude 会话与配置
+.claude/
+
+# InkOS 上游 git 备份（历史保留但不纳入本项目跟踪）
+inkos/.git.upstream-bak/
+
+# inkos 内部规则（node_modules/dist/.env/books 等）由 inkos/.gitignore 覆盖，
+# 根仓库会递归读取并同样生效。
