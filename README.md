@@ -2,7 +2,7 @@
 
 输入一份 brief（世界观 + 主角 + 简介），产出一整本 80 万 ~ 200 万字的长篇网文：AI 完成设定、架构、分支、写作、审判、整理全流程，人在关键节点做主编把关（逐章审批、局部重启、砍分支）。
 
-本项目基于 [InkOS v1.7.2](https://github.com/Narcooo/inkos) 二次开发，代码位于 [`inkos/`](inkos/)（pnpm monorepo：`packages/core` / `packages/studio` / `packages/cli`）。完整设计见 [`docs/设计文档.md`](docs/设计文档.md)，已实现的详细清单见 [`CLAUDE.md`](CLAUDE.md)。
+本项目基于 [InkOS v1.7.2](https://github.com/Narcooo/inkos) 二次开发，代码位于 [`inkos/`](inkos/)（pnpm monorepo：`packages/core` / `packages/studio` / `packages/cli`）。完整设计见 [`docs/设计文档.md`](docs/设计文档.md)，实现进度见下方「开发状态」。
 
 ## 核心特性
 
@@ -75,7 +75,6 @@ CLI 模式读取 `INKOS_LLM_*` 环境变量（见 `.env` 配置），入口为 `
 ```
 Online_writing/
 ├── docs/设计文档.md        # 完整设计（目标、架构、流水线、数据模型、里程碑）
-├── CLAUDE.md               # 已完成实现状态与开发注意事项
 └── inkos/                  # InkOS v1.7.2 二次开发 monorepo
     ├── packages/core/      # 编排、Agent、记忆/RAG、卡片、分支、审批、导出
     ├── packages/studio/    # Web 工作台（Vite 前端 + API server）
